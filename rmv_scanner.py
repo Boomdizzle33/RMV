@@ -45,10 +45,13 @@ def compute_rmv(data):
     highs = np.array([entry["h"] for entry in data])
     lows = np.array([entry["l"] for entry in data])
 
-    if len(closes) < 2:
-        return 0  # Can't compute log returns with 1 value
+    # True Range Calculation (Fixing Array Misalignment)
+    prev_close = np.roll(closes, 1)
+    prev_close[0] = closes[0]  # Avoiding indexing issue
 
-    tr = np.maximum(highs - lows, np.maximum(abs(highs - closes[:-1]), abs(lows - closes[:-1])))
+    tr = np.maximum(highs - lows, np.maximum(abs(highs - prev_close), abs(lows - prev_close)))
+
+    # Compute ATRs over different lookback periods
     atr1 = np.mean(tr[-5:])
     atr2 = np.mean(tr[-10:])
     atr3 = np.mean(tr[-20:])
@@ -60,6 +63,7 @@ def compute_rmv(data):
     if highest_atr == lowest_atr:
         return 0  # Avoid divide-by-zero error
 
+    # Proper RMV normalization to 0-100 scale
     rmv = ((avg_atr - lowest_atr) / (highest_atr - lowest_atr)) * 100
     return round(rmv, 2)
 
@@ -97,4 +101,3 @@ if uploaded_file is not None:
             file_name="rmv_results.csv",
             mime="text/csv"
         )
-
