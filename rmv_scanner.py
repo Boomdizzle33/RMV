@@ -6,41 +6,45 @@ import time
 from datetime import datetime, timedelta
 
 # Load API key securely from Streamlit secrets
-POLYGON_API_KEY = st.secrets["polygon"]["api_key"]
+try:
+    POLYGON_API_KEY = st.secrets["polygon"]["api_key"]  # Matches your secrets.toml structure
+except KeyError:
+    st.error("API Key not found! Ensure it's stored correctly in secrets.toml under [polygon]")
 
-# Function to fetch historical data from Polygon.io with proper error handling
-def fetch_stock_data(ticker, timespan="day", limit=50):
-    end_date = datetime.today().strftime("%Y-%m-%d")  # Get today's date
-    start_date = (datetime.today() - timedelta(days=limit * 2)).strftime("%Y-%m-%d")  # Get enough past data
-
+# Function to fetch stock data with retry logic and exponential backoff
+def fetch_stock_data(ticker, timespan="day", limit=50, max_retries=3):
+    end_date = datetime.today().strftime("%Y-%m-%d")  
+    start_date = (datetime.today() - timedelta(days=limit * 2)).strftime("%Y-%m-%d")  
     url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/{timespan}/{start_date}/{end_date}"
-    params = {"apiKey": POLYGON_API_KEY, "limit": limit}
     
-    session = requests.Session()  # Use session for efficiency
-    try:
-        response = session.get(url, params=params, timeout=5)  # Add timeout to prevent hanging requests
-        response.raise_for_status()  # Raise error if request fails
+    params = {"apiKey": POLYGON_API_KEY, "limit": limit}
+    session = requests.Session()
+
+    for attempt in range(max_retries):
+        try:
+            response = session.get(url, params=params, timeout=10)  # Increased timeout
+            response.raise_for_status()  
+            data = response.json()
+            
+            if "results" in data and data["results"]:
+                return data["results"]
+            else:
+                st.warning(f"No data found for {ticker}")
+                return []
         
-        data = response.json()
-        if "results" in data and data["results"]:
-            return data["results"]
-        else:
-            st.warning(f"No data returned for {ticker}")
-            return []
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching data for {ticker}: {e}")
-        return []
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error fetching {ticker}: {e}")
+            time.sleep(2 ** attempt)  # Exponential backoff
+
+    return []  # Return empty list if all retries fail
 
 # Function to compute RMV
 def compute_rmv(data):
-    if len(data) < 20:  # Ensure enough data points
-        return 0
-    closes = np.array([entry["c"] for entry in data])  # Extract close prices
-    log_returns = np.diff(np.log(closes))  # Log returns
-    if np.std(log_returns) == 0:
-        return 0  # Prevent division by zero
-    volatility = np.std(log_returns) * np.sqrt(252)  # Annualized volatility
-    return round(volatility * 100, 2)
+    if len(data) < 20:  
+        return 0  # Not enough data for calculation
+    closes = np.array([entry["c"] for entry in data])  
+    log_returns = np.diff(np.log(closes))  
+    return round(np.std(log_returns) * np.sqrt(252) * 100, 2) if np.std(log_returns) != 0 else 0
 
 # Streamlit UI
 st.title("RMV Stock Scanner")
@@ -61,21 +65,18 @@ if uploaded_file is not None:
             rmv_value = compute_rmv(stock_data)
             results.append({"Ticker": ticker, "RMV": rmv_value})
 
-            # Update progress
             progress_bar.progress((index + 1) / total_stocks)
 
-            # Prevent API rate limits
-            time.sleep(1.2)
+            time.sleep(0.6)  # Optimized for Polygon.io $29 plan rate limits
 
-        # Convert results to DataFrame and display
         results_df = pd.DataFrame(results)
         st.dataframe(results_df)
 
-        # Download as CSV
         st.download_button(
             label="Download RMV Results",
             data=results_df.to_csv(index=False),
             file_name="rmv_results.csv",
             mime="text/csv"
         )
+
 
