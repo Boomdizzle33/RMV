@@ -45,18 +45,28 @@ def compute_rmv(data, atr_periods=[5, 10, 20], lookback=50):
     lows = np.array([entry["l"] for entry in data])
     closes = np.array([entry["c"] for entry in data])
 
+    # Ensure same-length close array for True Range calculations
+    prev_closes = np.roll(closes, 1)
+    prev_closes[0] = closes[0]  # Avoid using uninitialized value
+
     # Compute True Range
-    tr = np.maximum(highs - lows, np.maximum(abs(highs - closes[:-1]), abs(lows - closes[:-1])))
+    tr = np.maximum(highs - lows, np.maximum(abs(highs - prev_closes), abs(lows - prev_closes)))
 
     # Compute ATR for different periods
-    atr_values = [np.mean(tr[i - period : i]) for period in atr_periods for i in range(period, len(tr))]
+    atr_values = []
+    for period in atr_periods:
+        if len(tr) >= period:
+            atr_values.append(np.convolve(tr, np.ones(period)/period, mode='valid')[-1])
+
+    if not atr_values:
+        return 0  # No ATR values computed
 
     # Average the ATRs for RMV tightness calculation
     avg_atr = np.mean(atr_values)
 
     # Normalization over lookback period
-    max_atr = np.max(atr_values[-lookback:])
-    min_atr = np.min(atr_values[-lookback:])
+    max_atr = max(atr_values[-lookback:]) if len(atr_values) >= lookback else max(atr_values)
+    min_atr = min(atr_values[-lookback:]) if len(atr_values) >= lookback else min(atr_values)
 
     if max_atr == min_atr:
         return 0  # Avoid divide by zero
@@ -96,6 +106,5 @@ if uploaded_file is not None:
             file_name="rmv_results.csv",
             mime="text/csv"
         )
-
 
 
