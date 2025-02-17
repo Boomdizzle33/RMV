@@ -1,122 +1,98 @@
-import streamlit as st
-import pandas as pd
-import requests
-import numpy as np
-import time
 import os
-from datetime import datetime, timedelta
+import time
+import pandas as pd
+import streamlit as st
+from polygon import RESTClient
+import numpy as np
 
-# Set up Streamlit UI
-st.title("📈 RMV Scanner - Upload Your TradingView Watchlist")
-
-# Upload file
-uploaded_file = st.file_uploader("Upload your TradingView Watchlist CSV", type=["csv"])
-
-if uploaded_file is None:
-    st.warning("⚠️ Please upload a CSV file containing your watchlist (must have a 'Ticker' column).")
+# Load API Key from Streamlit Secrets
+try:
+    POLYGON_API_KEY = st.secrets["polygon"]["api_key"]
+except KeyError:
+    st.error("❌ API Key not found in Streamlit secrets! Check secrets.toml structure.")
     st.stop()
 
-# Read the CSV file
-df = pd.read_csv(uploaded_file)
+# Set up Polygon.io Client
+client = RESTClient(POLYGON_API_KEY)
 
-# Validate CSV format
-if "Ticker" not in df.columns:
-    st.error("🚨 CSV file must contain a 'Ticker' column.")
+# CSV File Import
+CSV_FILE = "watchlist.csv"  # Change this if your file has a different name
+
+if not os.path.exists(CSV_FILE):
+    st.error(f"❌ Error: {CSV_FILE} not found. Make sure the file is in the correct location.")
     st.stop()
 
-tickers = df["Ticker"].dropna().tolist()
-
-if not tickers:
-    st.error("🚨 No tickers found in the CSV file. Please check your file.")
+# Load tickers from CSV
+try:
+    stock_list = pd.read_csv(CSV_FILE)
+    if "Ticker" not in stock_list.columns:
+        st.error("❌ Error: CSV file must contain a 'Ticker' column.")
+        st.stop()
+    tickers = stock_list["Ticker"].tolist()
+except Exception as e:
+    st.error(f"❌ Error loading CSV file: {e}")
     st.stop()
 
-st.success(f"✅ Loaded {len(tickers)} tickers.")
+# Parameters for RMV Calculation
+LOOKBACK_DAYS = 20  # Number of days to calculate RMV
+VOLATILITY_WINDOW = 10  # RMV window
+RMV_THRESHOLD = 20  # RMV filter level
 
-# API Key (Use Streamlit secrets for security)
-POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]
+def fetch_historical_data(ticker):
+    """Fetches the last LOOKBACK_DAYS + VOLATILITY_WINDOW days of data for RMV calculation."""
+    try:
+        end_date = pd.Timestamp.today().strftime('%Y-%m-%d')
+        start_date = (pd.Timestamp.today() - pd.Timedelta(days=LOOKBACK_DAYS + VOLATILITY_WINDOW)).strftime('%Y-%m-%d')
 
-# Polygon.io API setup
-BASE_URL = "https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&limit=120&apiKey=" + POLYGON_API_KEY
+        bars = client.list_aggs(ticker=ticker, multiplier=1, timespan="day", from_=start_date, to=end_date, limit=LOOKBACK_DAYS + VOLATILITY_WINDOW)
+        
+        data = [{"date": bar.timestamp, "close": bar.close} for bar in bars]
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.warning(f"⚠️ Could not fetch data for {ticker}: {e}")
+        return pd.DataFrame()
 
-# Date range for data retrieval
-end_date = datetime.today().strftime('%Y-%m-%d')
-start_date = (datetime.today() - timedelta(days=120)).strftime('%Y-%m-%d')  # Get last 120 days of data
+def calculate_rmv(df):
+    """Calculates Relative Measured Volatility (RMV)."""
+    if len(df) < VOLATILITY_WINDOW:
+        return 0  # Not enough data
 
-def fetch_stock_data(ticker):
-    """Fetches historical stock data from Polygon.io"""
-    url = BASE_URL.format(ticker=ticker, start_date=start_date, end_date=end_date)
-    response = requests.get(url)
+    df["log_returns"] = np.log(df["close"] / df["close"].shift(1))
+    df["rolling_std"] = df["log_returns"].rolling(window=VOLATILITY_WINDOW).std()
     
-    if response.status_code != 200:
-        return None  # API failed for this ticker
+    rmv = df["rolling_std"].iloc[-1] * 100
+    return round(rmv, 2) if not np.isnan(rmv) else 0
 
-    data = response.json()
-    
-    if "results" not in data or not isinstance(data["results"], list):
-        return None  # No valid data received
-
-    return data["results"]
-
-def calculate_atr(data, period=14):
-    """Calculates the Average True Range (ATR) for a given stock"""
-    if len(data) < period:
-        return None  # Not enough data
-
-    highs = np.array([day["h"] for day in data])
-    lows = np.array([day["l"] for day in data])
-    closes = np.array([day["c"] for day in data])
-    
-    tr1 = highs - lows
-    tr2 = np.abs(highs - np.roll(closes, shift=1))
-    tr3 = np.abs(lows - np.roll(closes, shift=1))
-    
-    tr = np.maximum(np.maximum(tr1, tr2), tr3)[1:]  # Ignore first row
-    atr = np.convolve(tr, np.ones(period)/period, mode='valid')
-    
-    return atr[-1] if len(atr) > 0 else None  # Return latest ATR
-
-# Processing tickers
+# Process Stocks and Calculate RMV
 results = []
+
 progress_bar = st.progress(0)
+total_stocks = len(tickers)
 
 for i, ticker in enumerate(tickers):
-    st.write(f"📊 Processing {ticker} ({i+1}/{len(tickers)})...")
+    df = fetch_historical_data(ticker)
     
-    stock_data = fetch_stock_data(ticker)
-    
-    if stock_data is None:
-        st.warning(f"⚠️ No data for {ticker}, skipping.")
+    if df.empty:
+        st.warning(f"⚠️ Skipping {ticker}, no data available.")
         continue
 
-    atr = calculate_atr(stock_data)
+    rmv_value = calculate_rmv(df)
+
+    if rmv_value <= RMV_THRESHOLD:  # Filter stocks based on RMV condition
+        results.append({"Ticker": ticker, "RMV": rmv_value})
     
-    if atr is None:
-        st.warning(f"⚠️ ATR not calculated for {ticker}, skipping.")
-        continue
+    progress_bar.progress((i + 1) / total_stocks)
+    time.sleep(0.5)  # To avoid rate limits
 
-    latest_close = stock_data[-1]["c"]
-    
-    if latest_close == 0:
-        st.warning(f"⚠️ Invalid closing price (0) for {ticker}, skipping.")
-        continue
-
-    rmv = (atr / latest_close) * 100
-    results.append({"Ticker": ticker, "Latest_RMV": rmv})
-
-    # Update progress bar
-    progress_bar.progress((i + 1) / len(tickers))
-
-    time.sleep(1)  # API rate limit handling
-
-# Display results
-if results:
-    output_df = pd.DataFrame(results)
-    st.write("✅ RMV Calculation Completed! Results:")
-    st.dataframe(output_df)
-
-    # Allow CSV download
-    csv = output_df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download RMV Results", data=csv, file_name="rmv_results.csv", mime="text/csv")
+# Convert results to DataFrame and Display
+final_df = pd.DataFrame(results)
+if not final_df.empty:
+    st.write("✅ **Filtered Stocks Based on RMV:**")
+    st.dataframe(final_df)
+    final_df.to_csv("filtered_stocks.csv", index=False)
+    st.success("✅ Results saved to `filtered_stocks.csv`.")
 else:
-    st.error("🚨 No valid RMV data calculated.")
+    st.warning("⚠️ No stocks met the RMV filter criteria.")
+
+st.success("🚀 RMV Scanner Completed!")
 
