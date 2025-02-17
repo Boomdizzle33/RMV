@@ -36,42 +36,31 @@ def fetch_stock_data(ticker, timespan="day", limit=50, max_retries=3):
 
     return []
 
-# Compute RMV
-def compute_rmv(data, atr_periods=[5, 10, 20], lookback=50):
-    if len(data) < max(atr_periods) + 1:  
+# Compute RMV (Fixed Calculation)
+def compute_rmv(data):
+    if len(data) < 20:  
         return 0  # Not enough data
 
+    closes = np.array([entry["c"] for entry in data])
     highs = np.array([entry["h"] for entry in data])
     lows = np.array([entry["l"] for entry in data])
-    closes = np.array([entry["c"] for entry in data])
 
-    # Ensure same-length close array for True Range calculations
-    prev_closes = np.roll(closes, 1)
-    prev_closes[0] = closes[0]  # Avoid using uninitialized value
+    if len(closes) < 2:
+        return 0  # Can't compute log returns with 1 value
 
-    # Compute True Range
-    tr = np.maximum(highs - lows, np.maximum(abs(highs - prev_closes), abs(lows - prev_closes)))
+    tr = np.maximum(highs - lows, np.maximum(abs(highs - closes[:-1]), abs(lows - closes[:-1])))
+    atr1 = np.mean(tr[-5:])
+    atr2 = np.mean(tr[-10:])
+    atr3 = np.mean(tr[-20:])
 
-    # Compute ATR for different periods
-    atr_values = []
-    for period in atr_periods:
-        if len(tr) >= period:
-            atr_values.append(np.convolve(tr, np.ones(period)/period, mode='valid')[-1])
+    avg_atr = np.mean([atr1, atr2, atr3])
+    highest_atr = np.max([atr1, atr2, atr3])
+    lowest_atr = np.min([atr1, atr2, atr3])
 
-    if not atr_values:
-        return 0  # No ATR values computed
+    if highest_atr == lowest_atr:
+        return 0  # Avoid divide-by-zero error
 
-    # Average the ATRs for RMV tightness calculation
-    avg_atr = np.mean(atr_values)
-
-    # Normalization over lookback period
-    max_atr = max(atr_values[-lookback:]) if len(atr_values) >= lookback else max(atr_values)
-    min_atr = min(atr_values[-lookback:]) if len(atr_values) >= lookback else min(atr_values)
-
-    if max_atr == min_atr:
-        return 0  # Avoid divide by zero
-
-    rmv = ((avg_atr - min_atr) / (max_atr - min_atr)) * 100
+    rmv = ((avg_atr - lowest_atr) / (highest_atr - lowest_atr)) * 100
     return round(rmv, 2)
 
 # Streamlit UI
@@ -98,13 +87,14 @@ if uploaded_file is not None:
             time.sleep(0.6)  # Optimized for Polygon.io $29 plan
 
         results_df = pd.DataFrame(results)
-        st.dataframe(results_df)  # Display as table
+        filtered_df = results_df[results_df["RMV"] < 20]  # Show only RMV < 20
+
+        st.dataframe(filtered_df)
 
         st.download_button(
             label="Download RMV Results",
-            data=results_df.to_csv(index=False),
+            data=filtered_df.to_csv(index=False),
             file_name="rmv_results.csv",
             mime="text/csv"
         )
-
 
