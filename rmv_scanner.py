@@ -12,7 +12,7 @@ except KeyError:
     st.error("API Key not found! Check secrets.toml")
     st.stop()
 
-# Fetch stock data from Polygon.io with retries
+# Fetch stock data from Polygon.io with retries and debugging
 def fetch_stock_data(ticker, timespan="day", limit=50, max_retries=3):
     end_date = datetime.today().strftime("%Y-%m-%d")
     start_date = (datetime.today() - timedelta(days=limit * 2)).strftime("%Y-%m-%d")
@@ -28,30 +28,32 @@ def fetch_stock_data(ticker, timespan="day", limit=50, max_retries=3):
             data = response.json()
             
             if "results" in data and data["results"]:
+                print(f"✅ {ticker}: {len(data['results'])} days retrieved")  # Debugging line
                 return data["results"]
             else:
-                return []  # No data
-        except requests.exceptions.RequestException:
-            time.sleep(2 ** attempt)  # Exponential backoff
+                print(f"⚠️ {ticker}: No data returned!")  # Debugging line
+                return []
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching {ticker}: {e}")
+            time.sleep(2 ** attempt) 
 
     return []
 
-# Compute RMV (Fixed Calculation)
+# Compute RMV with debugging
 def compute_rmv(data):
-    if len(data) < 20:  
-        return 0  # Not enough data
+    if len(data) < 20:
+        print("⚠️ Not enough data to calculate RMV")
+        return 0  
 
     closes = np.array([entry["c"] for entry in data])
     highs = np.array([entry["h"] for entry in data])
     lows = np.array([entry["l"] for entry in data])
 
-    # True Range Calculation (Fixing Array Misalignment)
     prev_close = np.roll(closes, 1)
-    prev_close[0] = closes[0]  # Avoiding indexing issue
+    prev_close[0] = closes[0]
 
     tr = np.maximum(highs - lows, np.maximum(abs(highs - prev_close), abs(lows - prev_close)))
 
-    # Compute ATRs over different lookback periods
     atr1 = np.mean(tr[-5:])
     atr2 = np.mean(tr[-10:])
     atr3 = np.mean(tr[-20:])
@@ -60,22 +62,26 @@ def compute_rmv(data):
     highest_atr = np.max([atr1, atr2, atr3])
     lowest_atr = np.min([atr1, atr2, atr3])
 
-    if highest_atr == lowest_atr:
-        return 0  # Avoid divide-by-zero error
+    print(f"🔍 ATR1: {atr1}, ATR2: {atr2}, ATR3: {atr3}")  # Debugging ATR values
 
-    # Proper RMV normalization to 0-100 scale
+    if highest_atr == lowest_atr:
+        print("⚠️ ATR values are too close, RMV calculation skipped")
+        return 0  
+
     rmv = ((avg_atr - lowest_atr) / (highest_atr - lowest_atr)) * 100
+    print(f"📊 RMV Calculated: {rmv}")  # Debugging RMV value
+
     return round(rmv, 2)
 
 # Streamlit UI
-st.title("RMV Stock Scanner")
-uploaded_file = st.file_uploader("Upload CSV with 'Ticker' column", type=["csv"])
+st.title("📉 RMV Stock Scanner")
+uploaded_file = st.file_uploader("📂 Upload CSV with 'Ticker' column", type=["csv"])
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
     
     if "Ticker" not in df.columns:
-        st.error("CSV must have a 'Ticker' column!")
+        st.error("⚠️ CSV must have a 'Ticker' column!")
     else:
         tickers = df["Ticker"].tolist()
         results = []
@@ -91,13 +97,25 @@ if uploaded_file is not None:
             time.sleep(0.6)  # Optimized for Polygon.io $29 plan
 
         results_df = pd.DataFrame(results)
-        filtered_df = results_df[results_df["RMV"] < 20]  # Show only RMV < 20
 
-        st.dataframe(filtered_df)
+        # Debugging: Show all RMV values
+        print(results_df)
 
+        # Filter RMV values below 20
+        filtered_df = results_df[results_df["RMV"] < 20]
+
+        # Display in Streamlit UI
+        if not filtered_df.empty:
+            st.write("📋 **Stocks with RMV below 20:**")
+            st.dataframe(filtered_df)
+        else:
+            st.write("⚠️ No stocks found with RMV below 20.")
+
+        # Download button for results
         st.download_button(
-            label="Download RMV Results",
-            data=filtered_df.to_csv(index=False),
+            label="⬇️ Download RMV Results",
+            data=results_df.to_csv(index=False),
             file_name="rmv_results.csv",
             mime="text/csv"
         )
+
