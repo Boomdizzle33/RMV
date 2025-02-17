@@ -3,9 +3,15 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+from datetime import datetime
 
-# 🚨 API Key (⚠️ NOT RECOMMENDED - Use Streamlit secrets instead)
-API_KEY = "RFFDShqsKc_lGTkbTdZmsrWppKOO1R9S"
+# Load API Key securely from Streamlit secrets
+API_KEY = st.secrets.get("polygon", {}).get("api_key")
+
+# Ensure the API key is available
+if not API_KEY:
+    st.error("🚨 API Key not found! Make sure you have added it in Streamlit Cloud Secrets.")
+    st.stop()  # Stop execution if API key is missing
 
 # Streamlit UI
 st.title("Pre-Market RMV Scanner")
@@ -24,27 +30,48 @@ DATA_LOOKBACK_DAYS = 200  # Extended historical data for better swing trading an
 
 # Function to fetch historical data for individual tickers
 def fetch_polygon_data(ticker, retries=3, delay=2):
-    """Fetches historical data from Polygon.io with retry handling & data validation."""
+    """Fetches historical data from Polygon.io with correct date formatting and debugging."""
     for attempt in range(retries):
         try:
-            url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{DATA_LOOKBACK_DAYS}/now?apiKey={API_KEY}"
+            # Get today's date in YYYY-MM-DD format
+            today_date = datetime.now().strftime('%Y-%m-%d')
+            url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{DATA_LOOKBACK_DAYS}/{today_date}?apiKey={API_KEY}"
+            
             response = requests.get(url)
+            
+            # Log the raw response for debugging
+            print(f"[DEBUG] API Response for {ticker}: {response.status_code}")
+            try:
+                response_data = response.json()
+                print(f"[DEBUG] Response JSON: {response_data}")
+            except:
+                print(f"[ERROR] Failed to parse JSON response for {ticker}")
+
             if response.status_code == 200:
-                data = response.json().get("results", [])
-                if data:
-                    df = pd.DataFrame(data)
-                    df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
-                    df.set_index('timestamp', inplace=True)
-                    df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close', 'v': 'Volume'}, inplace=True)
-                    
-                    # Ensure all necessary columns exist
-                    required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-                    if all(col in df.columns for col in required_columns):
-                        return df
-                    else:
-                        st.warning(f"⚠️ Incomplete data for {ticker}. Skipping...")
-                        return None
-            st.warning(f"⚠️ No data for {ticker} (Attempt {attempt+1}/{retries}). Retrying...")
+                data = response_data.get("results", [])
+                
+                # If Polygon returns empty data, print a warning
+                if not data:
+                    st.warning(f"⚠️ No data available for {ticker} on Polygon.io. Skipping...")
+                    return None
+                
+                # Convert response to DataFrame
+                df = pd.DataFrame(data)
+                df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close', 'v': 'Volume'}, inplace=True)
+
+                # Ensure all necessary columns exist
+                required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                if all(col in df.columns for col in required_columns):
+                    return df
+                else:
+                    st.warning(f"⚠️ Incomplete data for {ticker}. Skipping...")
+                    return None
+
+            else:
+                st.warning(f"⚠️ No data for {ticker} (Attempt {attempt+1}/{retries}). Retrying...")
+
         except Exception as e:
             st.error(f"❌ API Error fetching {ticker}: {e}")
         
