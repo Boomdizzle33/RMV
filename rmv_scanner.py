@@ -4,13 +4,8 @@ import numpy as np
 import requests
 import time
 
-# Load API Key securely from Streamlit secrets
-API_KEY = st.secrets.get("polygon", {}).get("api_key")
-
-# Ensure the API key is available
-if not API_KEY:
-    st.error("🚨 API Key not found! Make sure you have added it in Streamlit Cloud Secrets.")
-    st.stop()  # Stop execution if API key is missing
+# 🚨 API Key (⚠️ NOT RECOMMENDED - Use Streamlit secrets instead)
+API_KEY = "RFFDShqsKc_lGTkbTdZmsrWppKOO1R9S"
 
 # Streamlit UI
 st.title("Pre-Market RMV Scanner")
