@@ -5,16 +5,17 @@ import numpy as np
 import time
 from datetime import datetime, timedelta
 
-# Load API key securely from Streamlit secrets
+# Load API key securely
 try:
-    POLYGON_API_KEY = st.secrets["polygon"]["api_key"]  # Matches your secrets.toml structure
+    POLYGON_API_KEY = st.secrets["polygon"]["api_key"]
 except KeyError:
-    st.error("API Key not found! Ensure it's stored correctly in secrets.toml under [polygon]")
+    st.error("API Key not found! Check secrets.toml")
+    st.stop()
 
-# Function to fetch stock data with retry logic and exponential backoff
+# Fetch stock data from Polygon.io with retries
 def fetch_stock_data(ticker, timespan="day", limit=50, max_retries=3):
-    end_date = datetime.today().strftime("%Y-%m-%d")  
-    start_date = (datetime.today() - timedelta(days=limit * 2)).strftime("%Y-%m-%d")  
+    end_date = datetime.today().strftime("%Y-%m-%d")
+    start_date = (datetime.today() - timedelta(days=limit * 2)).strftime("%Y-%m-%d")
     url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/{timespan}/{start_date}/{end_date}"
     
     params = {"apiKey": POLYGON_API_KEY, "limit": limit}
@@ -22,36 +23,45 @@ def fetch_stock_data(ticker, timespan="day", limit=50, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            response = session.get(url, params=params, timeout=10)  # Increased timeout
-            response.raise_for_status()  
+            response = session.get(url, params=params, timeout=10)
+            response.raise_for_status()
             data = response.json()
             
             if "results" in data and data["results"]:
                 return data["results"]
             else:
-                st.warning(f"No data found for {ticker}")
-                return []
-        
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching {ticker}: {e}")
+                return []  # No data
+        except requests.exceptions.RequestException:
             time.sleep(2 ** attempt)  # Exponential backoff
 
-    return []  # Return empty list if all retries fail
+    return []
 
-# Function to compute RMV
+# Compute RMV (Fixed Calculation)
 def compute_rmv(data):
     if len(data) < 20:  
-        return 0  # Not enough data for calculation
-    closes = np.array([entry["c"] for entry in data])  
-    log_returns = np.diff(np.log(closes))  
-    return round(np.std(log_returns) * np.sqrt(252) * 100, 2) if np.std(log_returns) != 0 else 0
+        return 0  # Not enough data
+
+    closes = np.array([entry["c"] for entry in data])
+    
+    if len(closes) < 2:
+        return 0  # Can't compute log returns with 1 value
+
+    log_returns = np.diff(np.log(closes))  # Log returns formula
+
+    std_dev = np.std(log_returns)  # Standard deviation of log returns
+    if std_dev == 0:
+        return 0  # Avoid divide-by-zero error
+
+    rmv = std_dev * np.sqrt(252) * 100  # Annualized volatility
+    return round(rmv, 2)
 
 # Streamlit UI
 st.title("RMV Stock Scanner")
-uploaded_file = st.file_uploader("Upload your stock list CSV (must contain 'Ticker' column)", type=["csv"])
+uploaded_file = st.file_uploader("Upload CSV with 'Ticker' column", type=["csv"])
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
+    
     if "Ticker" not in df.columns:
         st.error("CSV must have a 'Ticker' column!")
     else:
@@ -66,8 +76,7 @@ if uploaded_file is not None:
             results.append({"Ticker": ticker, "RMV": rmv_value})
 
             progress_bar.progress((index + 1) / total_stocks)
-
-            time.sleep(0.6)  # Optimized for Polygon.io $29 plan rate limits
+            time.sleep(0.6)  # Optimized for Polygon.io $29 plan
 
         results_df = pd.DataFrame(results)
         st.dataframe(results_df)
