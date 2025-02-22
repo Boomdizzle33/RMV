@@ -34,10 +34,10 @@ def calculate_rmv(df, lookback=50):
         df['atr10'] = df['tr'].rolling(10).mean()
         df['atr15'] = df['tr'].rolling(15).mean()
 
-        # Calculate RMV
+        # Calculate RMV (Prevent Division by Zero)
         df['avg_atr'] = (df['atr5'] + df['atr10'] + df['atr15']) / 3
         df['max_avg_atr'] = df['avg_atr'].rolling(lookback).max()
-        df['rmv'] = (df['avg_atr'] / df['max_avg_atr']) * 100
+        df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100  # Prevent NaN values
 
         return df
     except Exception as e:
@@ -50,13 +50,15 @@ account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10
 
 if uploaded_file and st.button("Run Scanner"):
     # Read input file
-    tv_df = pd.read_csv(uploaded_file)
-
-    if "Ticker" not in tv_df.columns:
-        st.error("CSV file must have a 'Ticker' column.")
+    try:
+        tv_df = pd.read_csv(uploaded_file)
+        if "Ticker" not in tv_df.columns:
+            raise ValueError("CSV file must have a 'Ticker' column.")
+        tickers = tv_df['Ticker'].dropna().unique().tolist()
+    except Exception as e:
+        st.error(f"Error loading CSV: {e}")
         st.stop()
 
-    tickers = tv_df['Ticker'].unique().tolist()
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -71,14 +73,21 @@ if uploaded_file and st.button("Run Scanner"):
             progress_bar.progress(progress)
             status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
 
-            # Get historical data
+            # ✅ Fetch historical data
             resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
-            if not resp.results:
+
+            # ✅ Fix: Ensure API Response is Valid
+            if not resp or not isinstance(resp, dict) or "results" not in resp or not resp["results"]:
+                st.warning(f"Skipping {ticker}: No valid data received from API.")
                 continue
 
-            # Create DataFrame
-            df = pd.DataFrame(resp.results)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            # ✅ Convert response to DataFrame
+            df = pd.DataFrame(resp["results"])
+            if df.empty:
+                st.warning(f"Skipping {ticker}: No trading data available.")
+                continue
+
+            df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
             df = df.rename(columns={
                 'o': 'open',
                 'h': 'high',
@@ -104,7 +113,7 @@ if uploaded_file and st.button("Run Scanner"):
                 # Calculate position size
                 risk_amount = 0.01 * account_balance
                 risk_per_share = entry_price - stop_loss
-                position_size = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
+                position_size = int(risk_amount / risk_per_share) if risk_per_share > 0.01 else 0
 
                 results.append({
                     'Ticker': ticker,
