@@ -3,11 +3,20 @@ import pandas as pd
 import numpy as np
 from polygon import RESTClient
 import time
-from io import StringIO
 
 # Streamlit App Configuration
 st.set_page_config(page_title="Swing Trade Scanner", layout="wide")
 st.title("RMV-Based Swing Trade Scanner")
+
+# ✅ Securely Load API Key from Streamlit Secrets
+try:
+    api_key = st.secrets["polygon"]["api_key"]
+    if not api_key:
+        st.error("API Key is missing! Add it to Streamlit secrets.")
+        st.stop()
+except KeyError:
+    st.error("Secrets file not found. Please add your API Key in `.streamlit/secrets.toml` on Streamlit Cloud.")
+    st.stop()
 
 # Helper Functions
 def calculate_rmv(df, lookback=50):
@@ -29,7 +38,7 @@ def calculate_rmv(df, lookback=50):
         df['avg_atr'] = (df['atr5'] + df['atr10'] + df['atr15']) / 3
         df['max_avg_atr'] = df['avg_atr'].rolling(lookback).max()
         df['rmv'] = (df['avg_atr'] / df['max_avg_atr']) * 100
-        
+
         return df
     except Exception as e:
         st.error(f"Error calculating RMV: {str(e)}")
@@ -38,17 +47,20 @@ def calculate_rmv(df, lookback=50):
 # Streamlit UI Components
 uploaded_file = st.file_uploader("Upload TradingView Stock List (CSV)", type="csv")
 account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10000.0)
-api_key = st.text_input("Polygon.io API Key", type="password")
 
-if uploaded_file and api_key and st.button("Run Scanner"):
+if uploaded_file and st.button("Run Scanner"):
     # Read input file
     tv_df = pd.read_csv(uploaded_file)
-    tickers = tv_df['Ticker'].unique().tolist()
     
+    if "Ticker" not in tv_df.columns:
+        st.error("CSV file must have a 'Ticker' column.")
+        st.stop()
+
+    tickers = tv_df['Ticker'].unique().tolist()
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
+
     with RESTClient(api_key=api_key) as client:
         for i, ticker in enumerate(tickers):
             try:
@@ -56,12 +68,12 @@ if uploaded_file and api_key and st.button("Run Scanner"):
                 progress = (i+1)/len(tickers)
                 progress_bar.progress(progress)
                 status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
-                
+
                 # Get historical data
                 resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
                 if not resp.results:
                     continue
-                    
+
                 # Create DataFrame
                 df = pd.DataFrame(resp.results)
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -72,12 +84,12 @@ if uploaded_file and api_key and st.button("Run Scanner"):
                     'c': 'close',
                     'v': 'volume'
                 })
-                
+
                 # Calculate RMV
                 df = calculate_rmv(df)
                 if df is None or df.empty:
                     continue
-                
+
                 # Get latest values
                 latest = df.iloc[-1]
                 if latest['rmv'] <= 20:
@@ -86,12 +98,12 @@ if uploaded_file and api_key and st.button("Run Scanner"):
                     atr = latest['atr5']
                     stop_loss = entry_price - (1.5 * atr)
                     target_price = entry_price + (2 * (entry_price - stop_loss))
-                    
+
                     # Calculate position size
                     risk_amount = 0.01 * account_balance
                     risk_per_share = entry_price - stop_loss
-                    position_size = int(risk_amount / risk_per_share)
-                    
+                    position_size = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
+
                     results.append({
                         'Ticker': ticker,
                         'RMV': round(latest['rmv'], 2),
@@ -100,10 +112,10 @@ if uploaded_file and api_key and st.button("Run Scanner"):
                         'Target': round(target_price, 2),
                         'Shares': position_size
                     })
-                
+
                 # Respect API rate limits (5 requests/minute)
                 time.sleep(12)
-                
+
             except Exception as e:
                 st.error(f"Error processing {ticker}: {str(e)}")
                 continue
@@ -113,7 +125,7 @@ if uploaded_file and api_key and st.button("Run Scanner"):
         results_df = pd.DataFrame(results)
         st.subheader("Qualified Trade Setups")
         st.dataframe(results_df)
-        
+
         # Export functionality
         csv = results_df.to_csv(index=False)
         st.download_button(
@@ -124,4 +136,8 @@ if uploaded_file and api_key and st.button("Run Scanner"):
         )
     else:
         st.warning("No qualifying stocks found with RMV ≤ 20")
+
+    progress_bar.empty()
+    status_text.empty()
+
 
