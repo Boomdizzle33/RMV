@@ -69,13 +69,15 @@ if uploaded_file and st.button("Run Scanner"):
 
             resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
 
-            # ✅ Debugging: Convert Agg object to dict before printing
-            st.write(f"API Response for {ticker}: ", resp.__dict__)
+            # ✅ Debugging: Print API response to check format
+            st.write(f"API Response for {ticker}: ", resp)
 
-            if not resp or not isinstance(resp, dict) or "results" not in resp or not resp["results"]:
+            # ✅ Fix: Ensure API Response is a list inside "results"
+            if not isinstance(resp, dict) or "results" not in resp or not isinstance(resp["results"], list) or not resp["results"]:
                 st.warning(f"Skipping {ticker}: No valid data received from API.")
                 continue
 
+            # ✅ Convert API data to DataFrame
             df = pd.DataFrame(resp["results"])
             if df.empty:
                 st.warning(f"Skipping {ticker}: No trading data available.")
@@ -137,6 +139,4 @@ if uploaded_file and st.button("Run Scanner"):
 
     progress_bar.empty()
     status_text.empty()
-
-
 
