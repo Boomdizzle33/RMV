@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from polygon import RESTClient
 import time
+import json  # For debugging API responses
 
 # Streamlit App Configuration
 st.set_page_config(page_title="Swing Trade Scanner", layout="wide")
@@ -76,6 +77,9 @@ if uploaded_file and st.button("Run Scanner"):
             # ✅ Fetch historical data
             resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
 
+            # ✅ Debugging: Log the API response for analysis
+            st.write(f"API Response for {ticker}: ", json.dumps(resp, indent=2))
+
             # ✅ Fix: Ensure API Response is Valid
             if not resp or not isinstance(resp, dict) or "results" not in resp or not resp["results"]:
                 st.warning(f"Skipping {ticker}: No valid data received from API.")
@@ -125,7 +129,7 @@ if uploaded_file and st.button("Run Scanner"):
                 })
 
             # Respect API rate limits (5 requests/minute)
-            time.sleep(12)
+            time.sleep(15)  # Increased to 15 seconds to avoid API rate blocking
 
         except Exception as e:
             st.error(f"Error processing {ticker}: {str(e)}")
