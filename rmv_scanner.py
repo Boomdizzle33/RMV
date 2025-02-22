@@ -51,7 +51,7 @@ account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10
 if uploaded_file and st.button("Run Scanner"):
     # Read input file
     tv_df = pd.read_csv(uploaded_file)
-    
+
     if "Ticker" not in tv_df.columns:
         st.error("CSV file must have a 'Ticker' column.")
         st.stop()
@@ -61,64 +61,66 @@ if uploaded_file and st.button("Run Scanner"):
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    with RESTClient(api_key=api_key) as client:
-        for i, ticker in enumerate(tickers):
-            try:
-                # Update progress
-                progress = (i+1)/len(tickers)
-                progress_bar.progress(progress)
-                status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
+    # ✅ Fix: Initialize RESTClient correctly (No 'with' statement)
+    client = RESTClient(api_key=api_key)
 
-                # Get historical data
-                resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
-                if not resp.results:
-                    continue
+    for i, ticker in enumerate(tickers):
+        try:
+            # Update progress
+            progress = (i+1)/len(tickers)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
 
-                # Create DataFrame
-                df = pd.DataFrame(resp.results)
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df = df.rename(columns={
-                    'o': 'open',
-                    'h': 'high',
-                    'l': 'low',
-                    'c': 'close',
-                    'v': 'volume'
+            # Get historical data
+            resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
+            if not resp.results:
+                continue
+
+            # Create DataFrame
+            df = pd.DataFrame(resp.results)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df = df.rename(columns={
+                'o': 'open',
+                'h': 'high',
+                'l': 'low',
+                'c': 'close',
+                'v': 'volume'
+            })
+
+            # Calculate RMV
+            df = calculate_rmv(df)
+            if df is None or df.empty:
+                continue
+
+            # Get latest values
+            latest = df.iloc[-1]
+            if latest['rmv'] <= 20:
+                # Calculate trade parameters
+                entry_price = latest['close']
+                atr = latest['atr5']
+                stop_loss = entry_price - (1.5 * atr)
+                target_price = entry_price + (2 * (entry_price - stop_loss))
+
+                # Calculate position size
+                risk_amount = 0.01 * account_balance
+                risk_per_share = entry_price - stop_loss
+                position_size = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
+
+                results.append({
+                    'Ticker': ticker,
+                    'RMV': round(latest['rmv'], 2),
+                    'Entry': round(entry_price, 2),
+                    'Stop Loss': round(stop_loss, 2),
+                    'Target': round(target_price, 2),
+                    'Shares': position_size
                 })
 
-                # Calculate RMV
-                df = calculate_rmv(df)
-                if df is None or df.empty:
-                    continue
+            # Respect API rate limits (5 requests/minute)
+            time.sleep(12)
 
-                # Get latest values
-                latest = df.iloc[-1]
-                if latest['rmv'] <= 20:
-                    # Calculate trade parameters
-                    entry_price = latest['close']
-                    atr = latest['atr5']
-                    stop_loss = entry_price - (1.5 * atr)
-                    target_price = entry_price + (2 * (entry_price - stop_loss))
-
-                    # Calculate position size
-                    risk_amount = 0.01 * account_balance
-                    risk_per_share = entry_price - stop_loss
-                    position_size = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
-
-                    results.append({
-                        'Ticker': ticker,
-                        'RMV': round(latest['rmv'], 2),
-                        'Entry': round(entry_price, 2),
-                        'Stop Loss': round(stop_loss, 2),
-                        'Target': round(target_price, 2),
-                        'Shares': position_size
-                    })
-
-                # Respect API rate limits (5 requests/minute)
-                time.sleep(12)
-
-            except Exception as e:
-                st.error(f"Error processing {ticker}: {str(e)}")
-                continue
+        except Exception as e:
+            st.error(f"Error processing {ticker}: {str(e)}")
+            continue
 
     # Display results
     if results:
