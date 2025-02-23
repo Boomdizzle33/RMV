@@ -140,3 +140,4 @@ if uploaded_file and st.button("Run Scanner"):
         st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 20")
+
