@@ -53,21 +53,22 @@ def fetch_stock_data(ticker, results, client, debug_logs):
         logger.debug(f"Fetching data for {ticker}")
         resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
 
-        # ✅ Log full API response
-        logger.debug(f"API Response for {ticker}: {resp}")
-
-        if not isinstance(resp, dict) or "results" not in resp or not resp["results"]:
-            debug_logs.append(f"Skipping {ticker}: No valid data received from API.")
-            logger.warning(f"Skipping {ticker}: No valid data received from API.")
+        # ✅ Handle unexpected response format
+        if isinstance(resp, list):
+            df = pd.DataFrame([vars(agg) for agg in resp])  # Convert Agg objects to DataFrame
+        elif isinstance(resp, dict) and "results" in resp:
+            df = pd.DataFrame(resp["results"])
+        else:
+            debug_logs.append(f"Skipping {ticker}: Unexpected API response format.")
+            logger.warning(f"Skipping {ticker}: Unexpected API response format.")
             return
         
-        df = pd.DataFrame(resp["results"])
         if df.empty:
             debug_logs.append(f"Skipping {ticker}: No trading data available.")
             logger.warning(f"Skipping {ticker}: No trading data available.")
             return
 
-        df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
 
         # ✅ Log DataFrame before RMV calculation
@@ -149,14 +150,6 @@ if uploaded_file and st.button("Run Scanner"):
         results_df = pd.DataFrame(results)
         st.subheader("Qualified Trade Setups")
         st.dataframe(results_df)
-
-        csv = results_df.to_csv(index=False)
-        st.download_button(
-            label="Export Trade List",
-            data=csv,
-            file_name="trade_setups.csv",
-            mime="text/csv"
-        )
     else:
         st.warning("No qualifying stocks found with RMV ≤ 25")
 
