@@ -2,19 +2,17 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import logging
-import threading
-import time
 from polygon import RESTClient
+import time
 
-# ✅ Enable Debug Logging
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger()
+# ✅ Set up logging for debugging
+logging.basicConfig(filename="rmv_scanner.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Streamlit App Configuration
+# ✅ Streamlit App Configuration
 st.set_page_config(page_title="RMV-Based Swing Trade Scanner", layout="wide")
 st.title("RMV-Based Swing Trade Scanner")
 
-# ✅ Securely Load API Key from Streamlit Secrets
+# ✅ Load API Key from Streamlit Secrets
 try:
     api_key = st.secrets["polygon"]["api_key"]
     if not api_key:
@@ -27,9 +25,8 @@ except KeyError:
 # ✅ Create a Single RESTClient Instance (Fixes Connection Pool Issue)
 client = RESTClient(api_key=api_key)
 
-# ✅ Corrected RMV Calculation
+# ✅ Corrected RMV Calculation (Fixed Boolean Errors)
 def calculate_rmv(df, lookback=10):
-    """Compute RMV with optimized scaling and EMA ATR."""
     try:
         df = df.copy()
         df.dropna(inplace=True)
@@ -57,16 +54,20 @@ def calculate_rmv(df, lookback=10):
         # ✅ FIX: Ensure RMV is in correct range (should not always be 100)
         df["rmv"] = df["rmv"].clip(0, 100)
 
+        # ✅ FIX: Ensure RMV column does NOT contain a boolean by mistake
+        if df["rmv"].dtype == bool:
+            df["rmv"] = np.nan
+
         return df.dropna(subset=['rmv'])
 
     except Exception as e:
-        logger.error(f"Error calculating RMV: {str(e)}")
+        logging.error(f"Error calculating RMV: {str(e)}")
         return None
 
-# ✅ Fetch Stock Data with Rate Limit Handling
+# ✅ Fetch Stock Data from Polygon.io API
 def fetch_stock_data(ticker, results, debug_logs):
     try:
-        logger.debug(f"Fetching data for {ticker}")
+        logging.debug(f"Fetching data for {ticker}")
 
         # ✅ Rate Limiting - Ensures we don’t exceed Polygon’s API limits
         time.sleep(0.8)  
@@ -89,7 +90,7 @@ def fetch_stock_data(ticker, results, debug_logs):
         df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
 
         df = calculate_rmv(df)
-        if df is None or df.empty():
+        if df is None or df.empty:
             return
 
         # ✅ FIX: Check RMV Trend Over Last 10 Days
@@ -131,15 +132,9 @@ if uploaded_file and st.button("Run Scanner"):
     results = []
     debug_logs = []
 
-    threads = []
     for ticker in tickers:
-        t = threading.Thread(target=fetch_stock_data, args=(ticker, results, debug_logs))
-        threads.append(t)
-        t.start()
+        fetch_stock_data(ticker, results, debug_logs)
         time.sleep(0.8)  # ✅ Prevents hitting API rate limits
-
-    for t in threads:
-        t.join()
 
     for log in debug_logs:
         st.warning(log)
@@ -149,6 +144,7 @@ if uploaded_file and st.button("Run Scanner"):
         st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 20")
+
 
 
 
