@@ -10,7 +10,7 @@ from polygon import RESTClient
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
-# ✅ Global flag to stop old threads when a new run starts
+# ✅ Global flag to stop old threads when a new scan starts
 should_stop = False
 
 # Streamlit App Configuration
@@ -68,7 +68,7 @@ def calculate_rmv(df, lookback=15):
 def fetch_stock_data(ticker, results, debug_logs):
     global should_stop
     if should_stop:
-        return  # Stop old threads if the user starts a new scan
+        return  # ✅ Stops old threads when a new scan starts
 
     try:
         logger.debug(f"Fetching data for {ticker}")
@@ -158,3 +158,4 @@ if uploaded_file and st.button("Run Scanner"):
         st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 20")
+
