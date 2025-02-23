@@ -36,7 +36,7 @@ def calculate_rmv(df, lookback=50):
         df['max_avg_atr'] = df['avg_atr'].rolling(lookback).max()
         df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100
 
-        return df
+        return df.dropna()  # ✅ Fix: Ensure no NaN values
     except Exception as e:
         st.error(f"Error calculating RMV: {str(e)}")
         return None
@@ -47,7 +47,7 @@ account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10
 
 if uploaded_file and st.button("Run Scanner"):
     try:
-        tv_df = pd.read_csv(uploaded_file)
+        tv_df = pd.read_csv(uploaded_file, error_bad_lines=False)
         if "Ticker" not in tv_df.columns:
             raise ValueError("CSV file must have a 'Ticker' column.")
         tickers = tv_df['Ticker'].dropna().unique().tolist()
@@ -72,24 +72,34 @@ if uploaded_file and st.button("Run Scanner"):
             # ✅ Debugging: Print API response to check format
             st.write(f"API Response for {ticker}: ", resp)
 
-            # ✅ Fix: Ensure API Response is a list inside "results"
-            if not isinstance(resp, dict) or "results" not in resp or not isinstance(resp["results"], list) or not resp["results"]:
+            # ✅ Fix: Convert `Agg` objects to dictionary format before creating DataFrame
+            if isinstance(resp, list):
+                formatted_data = [{
+                    "open": agg.open,
+                    "high": agg.high,
+                    "low": agg.low,
+                    "close": agg.close,
+                    "volume": agg.volume,
+                    "vwap": agg.vwap,
+                    "timestamp": agg.timestamp
+                } for agg in resp]
+
+                df = pd.DataFrame(formatted_data)  # Convert to DataFrame
+            else:
                 st.warning(f"Skipping {ticker}: No valid data received from API.")
                 continue
 
-            # ✅ Convert API data to DataFrame
-            df = pd.DataFrame(resp["results"])
             if df.empty:
                 st.warning(f"Skipping {ticker}: No trading data available.")
                 continue
 
-            df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df = df.rename(columns={
-                'o': 'open',
-                'h': 'high',
-                'l': 'low',
-                'c': 'close',
-                'v': 'volume'
+                'open': 'open',
+                'high': 'high',
+                'low': 'low',
+                'close': 'close',
+                'volume': 'volume'
             })
 
             df = calculate_rmv(df)
@@ -116,7 +126,7 @@ if uploaded_file and st.button("Run Scanner"):
                     'Shares': position_size
                 })
 
-            time.sleep(15)  # Increase sleep time to 15 seconds
+            time.sleep(12)  # ✅ API rate limit fix
 
         except Exception as e:
             st.error(f"Error processing {ticker}: {str(e)}")
@@ -139,4 +149,5 @@ if uploaded_file and st.button("Run Scanner"):
 
     progress_bar.empty()
     status_text.empty()
+
 
