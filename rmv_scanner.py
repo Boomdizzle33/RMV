@@ -67,7 +67,8 @@ def calculate_rmv(df, lookback=15):
 
 # ✅ Fetch Stock Data with Rate Limit Handling
 def fetch_stock_data(ticker, results, debug_logs):
-    global should_stop
+    global should_stop  # ✅ Declare `global` before using it
+
     with thread_lock:
         if should_stop:
             return  # ✅ Stops old threads when a new scan starts
@@ -125,7 +126,8 @@ uploaded_file = st.file_uploader("Upload TradingView Stock List (CSV)", type="cs
 account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10000.0)
 
 if uploaded_file and st.button("Run Scanner"):
-    global should_stop
+    global should_stop  # ✅ Declare `global` before using it
+
     with thread_lock:
         should_stop = True  # ✅ Stop old threads when a new scan starts
     time.sleep(1)  # ✅ Give time to stop old processes
@@ -162,5 +164,6 @@ if uploaded_file and st.button("Run Scanner"):
         st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 20")
+
 
 
