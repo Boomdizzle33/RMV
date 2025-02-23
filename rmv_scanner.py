@@ -10,6 +10,9 @@ from polygon import RESTClient
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
+# ✅ Global flag to stop old threads when a new run starts
+should_stop = False
+
 # Streamlit App Configuration
 st.set_page_config(page_title="Swing Trade Scanner", layout="wide")
 st.title("RMV-Based Swing Trade Scanner")
@@ -63,6 +66,10 @@ def calculate_rmv(df, lookback=15):
 
 # ✅ Fetch Stock Data with Rate Limit Handling
 def fetch_stock_data(ticker, results, debug_logs):
+    global should_stop
+    if should_stop:
+        return  # Stop old threads if the user starts a new scan
+
     try:
         logger.debug(f"Fetching data for {ticker}")
 
@@ -71,7 +78,6 @@ def fetch_stock_data(ticker, results, debug_logs):
 
         resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
 
-        # ✅ Handle API response correctly
         if isinstance(resp, list):
             df = pd.DataFrame([vars(agg) for agg in resp])
         elif isinstance(resp, dict) and "results" in resp:
@@ -88,11 +94,12 @@ def fetch_stock_data(ticker, results, debug_logs):
         df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
 
         df = calculate_rmv(df)
-        if df is None or df.empty:
+        if df is None or df.empty():
             return
 
-        # ✅ FIX: Instead of checking just last RMV, check last 10 days
-        if (df['rmv'].tail(10) <= 20).any():
+        # ✅ FIX: Check RMV Trend Over Last 10 Days
+        rmv_last_10_days = df['rmv'].tail(10).values
+        if any(rmv <= 20 for rmv in rmv_last_10_days):
             latest = df.iloc[-1]
             entry_price = latest['close']
             atr = latest['atr5']
@@ -116,6 +123,11 @@ uploaded_file = st.file_uploader("Upload TradingView Stock List (CSV)", type="cs
 account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10000.0)
 
 if uploaded_file and st.button("Run Scanner"):
+    global should_stop
+    should_stop = True  # ✅ Stop old threads when a new scan starts
+    time.sleep(1)  # ✅ Give time to stop old processes
+    should_stop = False  # ✅ Reset flag for new scan
+
     try:
         tv_df = pd.read_csv(uploaded_file, on_bad_lines="skip")
         if "Ticker" not in tv_df.columns:
@@ -146,4 +158,3 @@ if uploaded_file and st.button("Run Scanner"):
         st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 20")
-
