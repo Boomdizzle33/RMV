@@ -36,7 +36,7 @@ def calculate_rmv(df, lookback=50):
         df['max_avg_atr'] = df['avg_atr'].rolling(lookback).max()
         df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100
 
-        return df.dropna()  # ✅ Fix: Ensure no NaN values
+        return df.dropna()
     except Exception as e:
         st.error(f"Error calculating RMV: {str(e)}")
         return None
@@ -47,7 +47,8 @@ account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10
 
 if uploaded_file and st.button("Run Scanner"):
     try:
-        tv_df = pd.read_csv(uploaded_file, error_bad_lines=False)
+        # ✅ Fixed: Use 'on_bad_lines' instead of deprecated 'error_bad_lines'
+        tv_df = pd.read_csv(uploaded_file, on_bad_lines="skip")
         if "Ticker" not in tv_df.columns:
             raise ValueError("CSV file must have a 'Ticker' column.")
         tickers = tv_df['Ticker'].dropna().unique().tolist()
@@ -84,7 +85,7 @@ if uploaded_file and st.button("Run Scanner"):
                     "timestamp": agg.timestamp
                 } for agg in resp]
 
-                df = pd.DataFrame(formatted_data)  # Convert to DataFrame
+                df = pd.DataFrame(formatted_data)
             else:
                 st.warning(f"Skipping {ticker}: No valid data received from API.")
                 continue
