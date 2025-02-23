@@ -25,7 +25,7 @@ except KeyError:
     st.stop()
 
 # ✅ Helper function to calculate RMV
-def calculate_rmv(df, lookback=20):
+def calculate_rmv(df, lookback=50):
     """Calculate Relative Measured Volatility (RMV)"""
     try:
         df.dropna(inplace=True)  # Remove NaN values before calculation
@@ -35,12 +35,13 @@ def calculate_rmv(df, lookback=20):
         df['tr3'] = (df['low'] - df['prev_close']).abs()
         df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
 
-        df['atr5'] = df['tr'].rolling(5).mean()
-        df['atr10'] = df['tr'].rolling(10).mean()
-        df['atr15'] = df['tr'].rolling(15).mean()
+        # ✅ Ensure ATR values are properly calculated
+        df['atr5'] = df['tr'].rolling(5, min_periods=1).mean()
+        df['atr10'] = df['tr'].rolling(10, min_periods=1).mean()
+        df['atr15'] = df['tr'].rolling(15, min_periods=1).mean()
 
         df['avg_atr'] = (df['atr5'] + df['atr10'] + df['atr15']) / 3
-        df['max_avg_atr'] = df['avg_atr'].rolling(lookback).max()
+        df['max_avg_atr'] = df['avg_atr'].rolling(lookback, min_periods=1).max()
         df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100  # Prevent NaN errors
 
         return df.dropna()
@@ -84,10 +85,8 @@ def fetch_stock_data(ticker, results, client, debug_logs):
 
         latest = df.iloc[-1]
 
-        # ✅ Log latest RMV before filtering
-        logger.debug(f"Latest RMV for {ticker}: {latest['rmv']}")
-
-        if latest['rmv'] <= 25:  # ✅ Adjusted RMV filter to increase trade opportunities
+        # ✅ Loosen RMV filter from ≤ 20 to ≤ 25
+        if latest['rmv'] <= 25:
             entry_price = latest['close']
             atr = latest['atr5']
             stop_loss = entry_price - (1.5 * atr)
@@ -120,11 +119,9 @@ if uploaded_file and st.button("Run Scanner"):
         st.error(f"Error loading CSV: {e}")
         st.stop()
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
     results = []
-    debug_logs = []  # ✅ Collect logs from threads
-    client = RESTClient(api_key=api_key)  # ✅ Fixed RESTClient issue
+    debug_logs = []
+    client = RESTClient(api_key=api_key)
 
     # ✅ Multi-threading for Faster API Calls
     threads = []
@@ -132,15 +129,14 @@ if uploaded_file and st.button("Run Scanner"):
         t = threading.Thread(target=fetch_stock_data, args=(ticker, results, client, debug_logs))
         threads.append(t)
         t.start()
-        progress_bar.progress((i + 1) / len(tickers))
-        status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
+        time.sleep(0.5)  # ✅ Prevents hitting API rate limits
 
     for t in threads:
         t.join()
 
-    # ✅ Display results
     if results:
         st.subheader("Qualified Trade Setups")
         st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 25")
+
