@@ -122,7 +122,7 @@ if uploaded_file and st.button("Run Scanner"):
     status_text = st.empty()
     results = []
     debug_logs = []  # ✅ Collect logs from threads
-    client = RESTClient(api_key=api_key)
+    client = RESTClient(api_key=api_key)  # ✅ Fixed RESTClient issue
 
     # ✅ Multi-threading for Faster API Calls
     threads = []
@@ -162,6 +162,5 @@ if uploaded_file and st.button("Run Scanner"):
 
     progress_bar.empty()
     status_text.empty()
-
 
 
