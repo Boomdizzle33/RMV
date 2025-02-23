@@ -53,7 +53,7 @@ def fetch_stock_data(ticker, results, client, debug_logs):
         logger.debug(f"Fetching data for {ticker}")
         resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
 
-        # ✅ Handle unexpected response format
+        # ✅ Handle API response correctly
         if isinstance(resp, list):
             df = pd.DataFrame([vars(agg) for agg in resp])  # Convert Agg objects to DataFrame
         elif isinstance(resp, dict) and "results" in resp:
@@ -86,7 +86,7 @@ def fetch_stock_data(ticker, results, client, debug_logs):
         # ✅ Log latest RMV before filtering
         logger.debug(f"Latest RMV for {ticker}: {latest['rmv']}")
 
-        if latest['rmv'] <= 25:  # ✅ Loosened filter from ≤ 20 to ≤ 25
+        if latest['rmv'] <= 25:
             entry_price = latest['close']
             atr = latest['atr5']
             stop_loss = entry_price - (1.5 * atr)
@@ -155,5 +155,4 @@ if uploaded_file and st.button("Run Scanner"):
 
     progress_bar.empty()
     status_text.empty()
-
 
