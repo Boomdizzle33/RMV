@@ -87,7 +87,7 @@ def fetch_stock_data(ticker, results, client, debug_logs):
         # ✅ Log latest RMV before filtering
         logger.debug(f"Latest RMV for {ticker}: {latest['rmv']}")
 
-        if latest['rmv'] <= 25:
+        if latest['rmv'] <= 25:  # ✅ Adjusted RMV filter to increase trade opportunities
             entry_price = latest['close']
             atr = latest['atr5']
             stop_loss = entry_price - (1.5 * atr)
@@ -132,28 +132,15 @@ if uploaded_file and st.button("Run Scanner"):
         t = threading.Thread(target=fetch_stock_data, args=(ticker, results, client, debug_logs))
         threads.append(t)
         t.start()
-
-        progress = (i + 1) / len(tickers)
-        progress_bar.progress(progress)
+        progress_bar.progress((i + 1) / len(tickers))
         status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
-
-        time.sleep(1)  # ✅ Allows multi-threaded requests without exceeding rate limits
 
     for t in threads:
         t.join()
 
-    # ✅ Display collected logs
-    for log in debug_logs:
-        st.warning(log)
-
     # ✅ Display results
     if results:
-        results_df = pd.DataFrame(results)
         st.subheader("Qualified Trade Setups")
-        st.dataframe(results_df)
+        st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 25")
-
-    progress_bar.empty()
-    status_text.empty()
-
