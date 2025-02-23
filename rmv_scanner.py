@@ -10,10 +10,6 @@ from polygon import RESTClient
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
-# ✅ Global flag to stop old threads when a new scan starts
-should_stop = False
-thread_lock = threading.Lock()  # ✅ Ensures thread safety
-
 # Streamlit App Configuration
 st.set_page_config(page_title="Swing Trade Scanner", layout="wide")
 st.title("RMV-Based Swing Trade Scanner")
@@ -67,12 +63,6 @@ def calculate_rmv(df, lookback=15):
 
 # ✅ Fetch Stock Data with Rate Limit Handling
 def fetch_stock_data(ticker, results, debug_logs):
-    global should_stop  # ✅ Declare `global` before using it
-
-    with thread_lock:
-        if should_stop:
-            return  # ✅ Stops old threads when a new scan starts
-
     try:
         logger.debug(f"Fetching data for {ticker}")
 
@@ -126,14 +116,6 @@ uploaded_file = st.file_uploader("Upload TradingView Stock List (CSV)", type="cs
 account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10000.0)
 
 if uploaded_file and st.button("Run Scanner"):
-    global should_stop  # ✅ Declare `global` before using it
-
-    with thread_lock:
-        should_stop = True  # ✅ Stop old threads when a new scan starts
-    time.sleep(1)  # ✅ Give time to stop old processes
-    with thread_lock:
-        should_stop = False  # ✅ Reset flag for new scan
-
     try:
         tv_df = pd.read_csv(uploaded_file, on_bad_lines="skip")
         if "Ticker" not in tv_df.columns:
