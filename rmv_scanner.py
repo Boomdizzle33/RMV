@@ -24,6 +24,9 @@ except KeyError:
     st.error("Secrets file not found. Please add your API Key in `.streamlit/secrets.toml` on Streamlit Cloud.")
     st.stop()
 
+# ✅ Create a Single RESTClient Instance (Fixes Connection Pool Issue)
+client = RESTClient(api_key=api_key)
+
 # ✅ Improved RMV Calculation
 def calculate_rmv(df, lookback=15):
     """Compute RMV with optimized scaling and EMA ATR."""
@@ -58,10 +61,14 @@ def calculate_rmv(df, lookback=15):
         logger.error(f"Error calculating RMV: {str(e)}")
         return None
 
-# ✅ Fetch Stock Data
-def fetch_stock_data(ticker, results, client, debug_logs):
+# ✅ Fetch Stock Data with Rate Limit Handling
+def fetch_stock_data(ticker, results, debug_logs):
     try:
         logger.debug(f"Fetching data for {ticker}")
+
+        # ✅ Rate Limiting - Ensures we don’t exceed Polygon’s API limits
+        time.sleep(0.8)  
+
         resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
 
         # ✅ Handle API response correctly
@@ -120,14 +127,13 @@ if uploaded_file and st.button("Run Scanner"):
 
     results = []
     debug_logs = []
-    client = RESTClient(api_key=api_key)
 
     threads = []
     for ticker in tickers:
-        t = threading.Thread(target=fetch_stock_data, args=(ticker, results, client, debug_logs))
+        t = threading.Thread(target=fetch_stock_data, args=(ticker, results, debug_logs))
         threads.append(t)
         t.start()
-        time.sleep(0.5)  # ✅ Prevents hitting API rate limits
+        time.sleep(0.8)  # ✅ Prevents hitting API rate limits
 
     for t in threads:
         t.join()
