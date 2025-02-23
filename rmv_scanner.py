@@ -1,107 +1,101 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import logging
-from polygon import RESTClient
+import requests
 import time
+from polygon import RESTClient
 
-# ✅ Set up logging for debugging
-logging.basicConfig(filename="rmv_scanner.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+# Load API Key from Streamlit Secrets
+API_KEY = st.secrets["polygon"]["api_key"]
 
-# ✅ Streamlit App Configuration
-st.set_page_config(page_title="RMV-Based Swing Trade Scanner", layout="wide")
-st.title("RMV-Based Swing Trade Scanner")
+# Streamlit UI
+st.set_page_config(page_title="RMV Swing Trade Scanner", layout="wide")
+st.title("📊 RMV-Based Swing Trade Scanner")
 
-# ✅ Load API Key from Streamlit Secrets
-try:
-    api_key = st.secrets["polygon"]["api_key"]
-    if not api_key:
-        st.error("API Key is missing! Add it to Streamlit secrets.")
-        st.stop()
-except KeyError:
-    st.error("Secrets file not found. Please add your API Key in `.streamlit/secrets.toml` on Streamlit Cloud.")
-    st.stop()
+# Upload Stock List
+uploaded_file = st.file_uploader("📂 Upload TradingView Stock List (CSV)", type="csv")
+account_balance = st.number_input("💰 Account Balance ($)", min_value=1.0, value=10000.0)
 
-# ✅ Create a Single RESTClient Instance (Fixes Connection Pool Issue)
-client = RESTClient(api_key=api_key)
+# Constants
+LOOKBACK_PERIOD = 50  # For RMV Calculation
+ATR_PERIODS = [5, 10, 15]  # ATR Lookbacks
+RISK_PERCENTAGE = 0.01  # 1% Risk Per Trade
 
-# ✅ Corrected RMV Calculation (Fixed Boolean Errors)
-def calculate_rmv(df, lookback=10):
+# Function to Calculate RMV
+def calculate_rmv(df):
     try:
-        df = df.copy()
-        df.dropna(inplace=True)
-
-        # ✅ Compute True Range (TR)
         df['prev_close'] = df['close'].shift(1)
-        df['tr1'] = df['high'] - df['low']
-        df['tr2'] = (df['high'] - df['prev_close']).abs()
-        df['tr3'] = (df['low'] - df['prev_close']).abs()
-        df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+        df['tr'] = np.maximum.reduce([
+            df['high'] - df['low'],
+            abs(df['high'] - df['prev_close']),
+            abs(df['low'] - df['prev_close'])
+        ])
 
-        # ✅ Use EMA for ATR
-        df['atr5'] = df['tr'].ewm(span=5, adjust=False).mean()
-        df['atr10'] = df['tr'].ewm(span=10, adjust=False).mean()
-        df['atr15'] = df['tr'].ewm(span=15, adjust=False).mean()
+        # Calculate ATR for multiple periods
+        for period in ATR_PERIODS:
+            df[f'atr{period}'] = df['tr'].rolling(period).mean()
 
-        # ✅ Compute Average ATR
-        df['avg_atr'] = (df['atr5'] + df['atr10'] + df['atr15']) / 3
+        # Compute RMV
+        df['avg_atr'] = df[[f'atr{p}' for p in ATR_PERIODS]].mean(axis=1)
+        df['max_avg_atr'] = df['avg_atr'].rolling(LOOKBACK_PERIOD).max()
+        df['rmv'] = (df['avg_atr'] / df['max_avg_atr']) * 100
 
-        # ✅ FIX: Adjust RMV Normalization for Better Contraction Detection
-        df["rmv"] = (df["avg_atr"] - df["avg_atr"].rolling(lookback).min()) / (
-            df["avg_atr"].rolling(lookback).max() - df["avg_atr"].rolling(lookback).min() + 1e-9
-        ) * 100
-
-        # ✅ FIX: Ensure RMV is in correct range (should not always be 100)
-        df["rmv"] = df["rmv"].clip(0, 100)
-
-        # ✅ FIX: Ensure RMV column does NOT contain a boolean by mistake
-        if df["rmv"].dtype == bool:
-            df["rmv"] = np.nan
-
-        return df.dropna(subset=['rmv'])
-
+        return df.dropna()  # Remove NaN values
     except Exception as e:
-        logging.error(f"Error calculating RMV: {str(e)}")
+        st.error(f"⚠️ RMV Calculation Error: {e}")
         return None
 
-# ✅ Fetch Stock Data from Polygon.io API
-def fetch_stock_data(ticker, results, debug_logs):
+# Function to Fetch Data from Polygon.io
+def fetch_stock_data(ticker):
     try:
-        logging.debug(f"Fetching data for {ticker}")
+        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/2023-01-01/2024-01-01?limit=50000&apiKey={API_KEY}"
+        response = requests.get(url)
+        data = response.json()
 
-        # ✅ Rate Limiting - Ensures we don’t exceed Polygon’s API limits
-        time.sleep(0.8)  
+        if 'results' not in data or not data['results']:
+            st.warning(f"⚠️ Skipping {ticker}: No trading data available.")
+            return None
 
-        resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
+        # Convert API response to DataFrame
+        df = pd.DataFrame(data['results'])
+        df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'}, inplace=True)
+        df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
 
-        if isinstance(resp, list):
-            df = pd.DataFrame([vars(agg) for agg in resp])
-        elif isinstance(resp, dict) and "results" in resp:
-            df = pd.DataFrame(resp["results"])
-        else:
-            debug_logs.append(f"Skipping {ticker}: Unexpected API response format.")
-            return
+        return df
+    except Exception as e:
+        st.error(f"⚠️ API Error fetching {ticker}: {e}")
+        return None
+
+# Main Scanner Execution
+if uploaded_file and st.button("🚀 Run Scanner"):
+    tv_df = pd.read_csv(uploaded_file)
+    tickers = tv_df['Ticker'].unique().tolist()
+    
+    results = []
+    progress_bar = st.progress(0)
+    
+    for i, ticker in enumerate(tickers):
+        progress = (i + 1) / len(tickers)
+        progress_bar.progress(progress)
         
-        if df.empty:
-            debug_logs.append(f"Skipping {ticker}: No trading data available.")
-            return
-
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
+        df = fetch_stock_data(ticker)
+        if df is None:
+            continue
 
         df = calculate_rmv(df)
         if df is None or df.empty:
-            return
+            continue
 
-        # ✅ FIX: Check RMV Trend Over Last 10 Days
-        df["rmv_below_20"] = df["rmv"].rolling(window=10).apply(lambda x: any(x <= 20), raw=True)
-
-        if df["rmv_below_20"].iloc[-1] == 1:
-            latest = df.iloc[-1]
+        latest = df.iloc[-1]
+        if latest['rmv'] <= 20:
             entry_price = latest['close']
             atr = latest['atr5']
             stop_loss = entry_price - (1.5 * atr)
             target_price = entry_price + (2 * (entry_price - stop_loss))
+
+            risk_amount = account_balance * RISK_PERCENTAGE
+            risk_per_share = entry_price - stop_loss
+            position_size = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
 
             results.append({
                 'Ticker': ticker,
@@ -109,41 +103,22 @@ def fetch_stock_data(ticker, results, debug_logs):
                 'Entry': round(entry_price, 2),
                 'Stop Loss': round(stop_loss, 2),
                 'Target': round(target_price, 2),
-                'Shares': 0
+                'Shares': position_size
             })
 
-    except Exception as e:
-        debug_logs.append(f"Error processing {ticker}: {str(e)}")
+        time.sleep(1)  # API rate limit handling
 
-# ✅ Streamlit UI
-uploaded_file = st.file_uploader("Upload TradingView Stock List (CSV)", type="csv")
-account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10000.0)
-
-if uploaded_file and st.button("Run Scanner"):
-    try:
-        tv_df = pd.read_csv(uploaded_file, on_bad_lines="skip")
-        if "Ticker" not in tv_df.columns:
-            raise ValueError("CSV file must have a 'Ticker' column.")
-        tickers = tv_df['Ticker'].dropna().unique().tolist()
-    except Exception as e:
-        st.error(f"Error loading CSV: {e}")
-        st.stop()
-
-    results = []
-    debug_logs = []
-
-    for ticker in tickers:
-        fetch_stock_data(ticker, results, debug_logs)
-        time.sleep(0.8)  # ✅ Prevents hitting API rate limits
-
-    for log in debug_logs:
-        st.warning(log)
+    progress_bar.empty()
 
     if results:
-        st.subheader("Qualified Trade Setups")
-        st.dataframe(pd.DataFrame(results))
+        results_df = pd.DataFrame(results)
+        st.subheader("✅ Qualified Trade Setups")
+        st.dataframe(results_df)
+        
+        csv = results_df.to_csv(index=False)
+        st.download_button(label="📥 Export Trade List", data=csv, file_name="trade_setups.csv", mime="text/csv")
     else:
-        st.warning("No qualifying stocks found with RMV ≤ 20")
+        st.warning("⚠️ No qualifying stocks found with RMV ≤ 20")
 
 
 
