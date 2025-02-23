@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from polygon import RESTClient
+import asyncio
 import time
+from polygon import RESTClient
+import aiohttp  # Asynchronous requests for speed
 
 # Streamlit App Configuration
 st.set_page_config(page_title="Swing Trade Scanner", layout="wide")
@@ -18,9 +20,22 @@ except KeyError:
     st.error("Secrets file not found. Please add your API Key in `.streamlit/secrets.toml` on Streamlit Cloud.")
     st.stop()
 
-# Helper Functions
+# ✅ Async function to fetch stock data faster
+async def fetch_stock_data(session, ticker):
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/2023-01-01/2024-01-01?limit=50000&apiKey={api_key}"
+    
+    async with session.get(url) as response:
+        data = await response.json()
+        return ticker, data
+
+# ✅ Batch process all stocks
+async def fetch_all_stocks(tickers):
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_stock_data(session, ticker) for ticker in tickers]
+        return await asyncio.gather(*tasks)
+
+# ✅ Helper function to calculate RMV
 def calculate_rmv(df, lookback=50):
-    """Calculate Relative Measured Volatility (RMV)"""
     try:
         df['prev_close'] = df['close'].shift(1)
         df['tr1'] = df['high'] - df['low']
@@ -34,20 +49,19 @@ def calculate_rmv(df, lookback=50):
 
         df['avg_atr'] = (df['atr5'] + df['atr10'] + df['atr15']) / 3
         df['max_avg_atr'] = df['avg_atr'].rolling(lookback).max()
-        df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100
+        df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100  # Prevent NaN errors
 
         return df.dropna()
     except Exception as e:
         st.error(f"Error calculating RMV: {str(e)}")
         return None
 
-# Streamlit UI Components
+# ✅ Streamlit UI Components
 uploaded_file = st.file_uploader("Upload TradingView Stock List (CSV)", type="csv")
 account_balance = st.number_input("Account Balance ($)", min_value=1.0, value=10000.0)
 
 if uploaded_file and st.button("Run Scanner"):
     try:
-        # ✅ Fixed: Use 'on_bad_lines' instead of deprecated 'error_bad_lines'
         tv_df = pd.read_csv(uploaded_file, on_bad_lines="skip")
         if "Ticker" not in tv_df.columns:
             raise ValueError("CSV file must have a 'Ticker' column.")
@@ -56,57 +70,41 @@ if uploaded_file and st.button("Run Scanner"):
         st.error(f"Error loading CSV: {e}")
         st.stop()
 
-    results = []
+    # ✅ Progress Bar
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    client = RESTClient(api_key=api_key)
+    # ✅ Run batch API requests
+    results = asyncio.run(fetch_all_stocks(tickers))
 
-    for i, ticker in enumerate(tickers):
+    trade_setups = []
+    
+    for i, (ticker, resp) in enumerate(results):
         try:
+            # ✅ Update progress
             progress = (i+1)/len(tickers)
             progress_bar.progress(progress)
             status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
 
-            resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
-
-            # ✅ Debugging: Print API response to check format
-            st.write(f"API Response for {ticker}: ", resp)
-
-            # ✅ Fix: Convert `Agg` objects to dictionary format before creating DataFrame
-            if isinstance(resp, list):
-                formatted_data = [{
-                    "open": agg.open,
-                    "high": agg.high,
-                    "low": agg.low,
-                    "close": agg.close,
-                    "volume": agg.volume,
-                    "vwap": agg.vwap,
-                    "timestamp": agg.timestamp
-                } for agg in resp]
-
-                df = pd.DataFrame(formatted_data)
-            else:
+            # ✅ Ensure API response is valid
+            if not isinstance(resp, dict) or "results" not in resp or not resp["results"]:
                 st.warning(f"Skipping {ticker}: No valid data received from API.")
                 continue
 
+            # ✅ Convert response to DataFrame
+            df = pd.DataFrame(resp["results"])
             if df.empty:
                 st.warning(f"Skipping {ticker}: No trading data available.")
                 continue
 
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df = df.rename(columns={
-                'open': 'open',
-                'high': 'high',
-                'low': 'low',
-                'close': 'close',
-                'volume': 'volume'
-            })
+            df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
+            df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
 
             df = calculate_rmv(df)
             if df is None or df.empty:
                 continue
 
+            # ✅ Get latest values
             latest = df.iloc[-1]
             if latest['rmv'] <= 20:
                 entry_price = latest['close']
@@ -118,7 +116,7 @@ if uploaded_file and st.button("Run Scanner"):
                 risk_per_share = entry_price - stop_loss
                 position_size = int(risk_amount / risk_per_share) if risk_per_share > 0.01 else 0
 
-                results.append({
+                trade_setups.append({
                     'Ticker': ticker,
                     'RMV': round(latest['rmv'], 2),
                     'Entry': round(entry_price, 2),
@@ -127,17 +125,17 @@ if uploaded_file and st.button("Run Scanner"):
                     'Shares': position_size
                 })
 
-            time.sleep(12)  # ✅ API rate limit fix
-
         except Exception as e:
             st.error(f"Error processing {ticker}: {str(e)}")
             continue
 
-    if results:
-        results_df = pd.DataFrame(results)
+    # ✅ Display results
+    if trade_setups:
+        results_df = pd.DataFrame(trade_setups)
         st.subheader("Qualified Trade Setups")
         st.dataframe(results_df)
 
+        # ✅ Export functionality
         csv = results_df.to_csv(index=False)
         st.download_button(
             label="Export Trade List",
