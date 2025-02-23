@@ -24,27 +24,36 @@ except KeyError:
     st.error("Secrets file not found. Please add your API Key in `.streamlit/secrets.toml` on Streamlit Cloud.")
     st.stop()
 
-# ✅ Helper function to calculate RMV
-def calculate_rmv(df, lookback=50):
-    """Calculate Relative Measured Volatility (RMV)"""
+# ✅ Corrected RMV Calculation with EMA ATR Smoothing
+def calculate_rmv(df, lookback=20):
+    """Compute Relative Measured Volatility (RMV) with properly scaled normalization."""
     try:
-        df.dropna(inplace=True)  # Remove NaN values before calculation
+        df = df.copy()
+        df.dropna(inplace=True)
+
+        # ✅ Compute True Range (TR)
         df['prev_close'] = df['close'].shift(1)
         df['tr1'] = df['high'] - df['low']
         df['tr2'] = (df['high'] - df['prev_close']).abs()
         df['tr3'] = (df['low'] - df['prev_close']).abs()
         df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
 
-        # ✅ Ensure ATR values are properly calculated
-        df['atr5'] = df['tr'].rolling(5, min_periods=1).mean()
-        df['atr10'] = df['tr'].rolling(10, min_periods=1).mean()
-        df['atr15'] = df['tr'].rolling(15, min_periods=1).mean()
+        # ✅ Use EMA for ATR to improve sensitivity
+        df['atr5'] = df['tr'].ewm(span=5, adjust=False).mean()
+        df['atr10'] = df['tr'].ewm(span=10, adjust=False).mean()
+        df['atr15'] = df['tr'].ewm(span=15, adjust=False).mean()
 
+        # ✅ Compute Average ATR
         df['avg_atr'] = (df['atr5'] + df['atr10'] + df['atr15']) / 3
-        df['max_avg_atr'] = df['avg_atr'].rolling(lookback, min_periods=1).max()
-        df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100  # Prevent NaN errors
 
-        return df.dropna()
+        # ✅ Fix Lookback issue (reducing to 20 for better RMV scaling)
+        df['max_avg_atr'] = df['avg_atr'].rolling(lookback, min_periods=1).max()
+
+        # ✅ Compute RMV (properly scaled)
+        df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100
+
+        return df.dropna(subset=['rmv'])
+
     except Exception as e:
         logger.error(f"Error calculating RMV: {str(e)}")
         return None
@@ -134,6 +143,11 @@ if uploaded_file and st.button("Run Scanner"):
     for t in threads:
         t.join()
 
+    # ✅ Display logs for debugging
+    for log in debug_logs:
+        st.warning(log)
+
+    # ✅ Display results
     if results:
         st.subheader("Qualified Trade Setups")
         st.dataframe(pd.DataFrame(results))
