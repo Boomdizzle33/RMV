@@ -28,6 +28,7 @@ except KeyError:
 def calculate_rmv(df, lookback=20):
     """Calculate Relative Measured Volatility (RMV)"""
     try:
+        df.dropna(inplace=True)  # Remove NaN values before calculation
         df['prev_close'] = df['close'].shift(1)
         df['tr1'] = df['high'] - df['low']
         df['tr2'] = (df['high'] - df['prev_close']).abs()
@@ -47,7 +48,7 @@ def calculate_rmv(df, lookback=20):
         logger.error(f"Error calculating RMV: {str(e)}")
         return None
 
-# ✅ Function to fetch stock data (logs every step)
+# ✅ Function to fetch stock data
 def fetch_stock_data(ticker, results, client, debug_logs):
     try:
         logger.debug(f"Fetching data for {ticker}")
