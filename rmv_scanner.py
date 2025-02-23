@@ -55,6 +55,10 @@ def calculate_rmv(df, lookback=15):
         # ✅ Compute RMV (properly scaled)
         df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100
 
+        # 🔥 **Fix: Ensure 'rmv' column doesn't have a boolean conflict**
+        if isinstance(df['rmv'], bool):  
+            df['rmv'] = np.nan  
+
         return df.dropna(subset=['rmv'])
 
     except Exception as e:
@@ -91,22 +95,23 @@ def fetch_stock_data(ticker, results, debug_logs):
             return
 
         # ✅ FIX: Check RMV Trend Over Last 10 Days
-        rmv_last_10_days = df['rmv'].tail(10).values
-        if any(rmv <= 20 for rmv in rmv_last_10_days):
-            latest = df.iloc[-1]
-            entry_price = latest['close']
-            atr = latest['atr5']
-            stop_loss = entry_price - (1.5 * atr)
-            target_price = entry_price + (2 * (entry_price - stop_loss))
+        if 'rmv' in df.columns and df['rmv'].dtype != bool:
+            rmv_last_10_days = df['rmv'].tail(10).values
+            if any(rmv <= 20 for rmv in rmv_last_10_days):
+                latest = df.iloc[-1]
+                entry_price = latest['close']
+                atr = latest['atr5']
+                stop_loss = entry_price - (1.5 * atr)
+                target_price = entry_price + (2 * (entry_price - stop_loss))
 
-            results.append({
-                'Ticker': ticker,
-                'RMV': round(latest['rmv'], 2),
-                'Entry': round(entry_price, 2),
-                'Stop Loss': round(stop_loss, 2),
-                'Target': round(target_price, 2),
-                'Shares': 0
-            })
+                results.append({
+                    'Ticker': ticker,
+                    'RMV': round(latest['rmv'], 2),
+                    'Entry': round(entry_price, 2),
+                    'Stop Loss': round(stop_loss, 2),
+                    'Target': round(target_price, 2),
+                    'Shares': 0
+                })
 
     except Exception as e:
         debug_logs.append(f"Error processing {ticker}: {str(e)}")
@@ -146,6 +151,4 @@ if uploaded_file and st.button("Run Scanner"):
         st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 20")
-
-
 
