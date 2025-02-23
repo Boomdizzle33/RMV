@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %
 logger = logging.getLogger()
 
 # Streamlit App Configuration
-st.set_page_config(page_title="Swing Trade Scanner", layout="wide")
+st.set_page_config(page_title="RMV-Based Swing Trade Scanner", layout="wide")
 st.title("RMV-Based Swing Trade Scanner")
 
 # ✅ Securely Load API Key from Streamlit Secrets
@@ -27,8 +27,8 @@ except KeyError:
 # ✅ Create a Single RESTClient Instance (Fixes Connection Pool Issue)
 client = RESTClient(api_key=api_key)
 
-# ✅ Improved RMV Calculation
-def calculate_rmv(df, lookback=15):
+# ✅ Corrected RMV Calculation
+def calculate_rmv(df, lookback=10):
     """Compute RMV with optimized scaling and EMA ATR."""
     try:
         df = df.copy()
@@ -49,15 +49,13 @@ def calculate_rmv(df, lookback=15):
         # ✅ Compute Average ATR
         df['avg_atr'] = (df['atr5'] + df['atr10'] + df['atr15']) / 3
 
-        # ✅ Fix Lookback issue (reduced to 15 for better RMV scaling)
-        df['max_avg_atr'] = df['avg_atr'].rolling(lookback, min_periods=1).max()
+        # ✅ FIX: Adjust RMV Normalization for Better Contraction Detection
+        df["rmv"] = (df["avg_atr"] - df["avg_atr"].rolling(lookback).min()) / (
+            df["avg_atr"].rolling(lookback).max() - df["avg_atr"].rolling(lookback).min() + 1e-9
+        ) * 100
 
-        # ✅ Compute RMV (properly scaled)
-        df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100
-
-        # 🔥 **Fix: Ensure 'rmv' column doesn't have a boolean conflict**
-        if isinstance(df['rmv'], bool):  
-            df['rmv'] = np.nan  
+        # ✅ FIX: Ensure RMV is in correct range (should not always be 100)
+        df["rmv"] = df["rmv"].clip(0, 100)
 
         return df.dropna(subset=['rmv'])
 
@@ -95,23 +93,23 @@ def fetch_stock_data(ticker, results, debug_logs):
             return
 
         # ✅ FIX: Check RMV Trend Over Last 10 Days
-        if 'rmv' in df.columns and df['rmv'].dtype != bool:
-            rmv_last_10_days = df['rmv'].tail(10).values
-            if any(rmv <= 20 for rmv in rmv_last_10_days):
-                latest = df.iloc[-1]
-                entry_price = latest['close']
-                atr = latest['atr5']
-                stop_loss = entry_price - (1.5 * atr)
-                target_price = entry_price + (2 * (entry_price - stop_loss))
+        df["rmv_below_20"] = df["rmv"].rolling(window=10).apply(lambda x: any(x <= 20), raw=True)
 
-                results.append({
-                    'Ticker': ticker,
-                    'RMV': round(latest['rmv'], 2),
-                    'Entry': round(entry_price, 2),
-                    'Stop Loss': round(stop_loss, 2),
-                    'Target': round(target_price, 2),
-                    'Shares': 0
-                })
+        if df["rmv_below_20"].iloc[-1] == 1:
+            latest = df.iloc[-1]
+            entry_price = latest['close']
+            atr = latest['atr5']
+            stop_loss = entry_price - (1.5 * atr)
+            target_price = entry_price + (2 * (entry_price - stop_loss))
+
+            results.append({
+                'Ticker': ticker,
+                'RMV': round(latest['rmv'], 2),
+                'Entry': round(entry_price, 2),
+                'Stop Loss': round(stop_loss, 2),
+                'Target': round(target_price, 2),
+                'Shares': 0
+            })
 
     except Exception as e:
         debug_logs.append(f"Error processing {ticker}: {str(e)}")
@@ -151,4 +149,5 @@ if uploaded_file and st.button("Run Scanner"):
         st.dataframe(pd.DataFrame(results))
     else:
         st.warning("No qualifying stocks found with RMV ≤ 20")
+
 
