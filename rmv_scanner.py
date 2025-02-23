@@ -1,10 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import asyncio
+import threading
 import time
 from polygon import RESTClient
-import aiohttp  # Asynchronous requests for speed
 
 # Streamlit App Configuration
 st.set_page_config(page_title="Swing Trade Scanner", layout="wide")
@@ -20,22 +19,8 @@ except KeyError:
     st.error("Secrets file not found. Please add your API Key in `.streamlit/secrets.toml` on Streamlit Cloud.")
     st.stop()
 
-# ✅ Async function to fetch stock data faster
-async def fetch_stock_data(session, ticker):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/2023-01-01/2024-01-01?limit=50000&apiKey={api_key}"
-    
-    async with session.get(url) as response:
-        data = await response.json()
-        return ticker, data
-
-# ✅ Batch process all stocks
-async def fetch_all_stocks(tickers):
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_stock_data(session, ticker) for ticker in tickers]
-        return await asyncio.gather(*tasks)
-
 # ✅ Helper function to calculate RMV
-def calculate_rmv(df, lookback=50):
+def calculate_rmv(df, lookback=20):  # ✅ Reduced lookback period for better results
     try:
         df['prev_close'] = df['close'].shift(1)
         df['tr1'] = df['high'] - df['low']
@@ -49,12 +34,65 @@ def calculate_rmv(df, lookback=50):
 
         df['avg_atr'] = (df['atr5'] + df['atr10'] + df['atr15']) / 3
         df['max_avg_atr'] = df['avg_atr'].rolling(lookback).max()
-        df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100  # Prevent NaN errors
+        df['rmv'] = (df['avg_atr'] / (df['max_avg_atr'] + 1e-9)) * 100
 
         return df.dropna()
     except Exception as e:
         st.error(f"Error calculating RMV: {str(e)}")
         return None
+
+# ✅ Function to fetch stock data
+def fetch_stock_data(ticker, results, client):
+    try:
+        resp = client.get_aggs(ticker, 1, "day", "2023-01-01", "2024-01-01", limit=50000)
+
+        # ✅ Debugging: Print API response
+        st.write(f"API Response for {ticker}: ", resp)
+
+        if not isinstance(resp, dict) or "results" not in resp or not resp["results"]:
+            st.warning(f"Skipping {ticker}: No valid data received from API.")
+            return
+        
+        df = pd.DataFrame(resp["results"])
+        if df.empty:
+            st.warning(f"Skipping {ticker}: No trading data available.")
+            return
+
+        df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
+        df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
+
+        # ✅ Debugging: Show raw DataFrame
+        st.write(f"Data for {ticker} before RMV calculation:", df.head())
+
+        df = calculate_rmv(df)
+        if df is None or df.empty:
+            return
+
+        # ✅ Debugging: Show RMV values
+        st.write(f"RMV values for {ticker}:", df[['timestamp', 'close', 'rmv']].tail(10))
+
+        latest = df.iloc[-1]
+
+        # ✅ Debugging: Show latest RMV before filtering
+        st.write(f"Latest RMV for {ticker}: {latest['rmv']}")
+
+        if latest['rmv'] <= 25:  # ✅ Loosened filter from ≤ 20 to ≤ 25
+            entry_price = latest['close']
+            atr = latest['atr5']
+            stop_loss = entry_price - (1.5 * atr)
+            target_price = entry_price + (2 * (entry_price - stop_loss))
+
+            results.append({
+                'Ticker': ticker,
+                'RMV': round(latest['rmv'], 2),
+                'Entry': round(entry_price, 2),
+                'Stop Loss': round(stop_loss, 2),
+                'Target': round(target_price, 2),
+                'Shares': 0  # Position sizing logic can be added later
+            })
+
+    except Exception as e:
+        st.error(f"Error processing {ticker}: {str(e)}")
 
 # ✅ Streamlit UI Components
 uploaded_file = st.file_uploader("Upload TradingView Stock List (CSV)", type="csv")
@@ -70,72 +108,33 @@ if uploaded_file and st.button("Run Scanner"):
         st.error(f"Error loading CSV: {e}")
         st.stop()
 
-    # ✅ Progress Bar
     progress_bar = st.progress(0)
     status_text = st.empty()
+    results = []
+    client = RESTClient(api_key=api_key)
 
-    # ✅ Run batch API requests
-    results = asyncio.run(fetch_all_stocks(tickers))
+    # ✅ Multi-threading for Faster API Calls
+    threads = []
+    for i, ticker in enumerate(tickers):
+        t = threading.Thread(target=fetch_stock_data, args=(ticker, results, client))
+        threads.append(t)
+        t.start()
 
-    trade_setups = []
-    
-    for i, (ticker, resp) in enumerate(results):
-        try:
-            # ✅ Update progress
-            progress = (i+1)/len(tickers)
-            progress_bar.progress(progress)
-            status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
+        progress = (i + 1) / len(tickers)
+        progress_bar.progress(progress)
+        status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
 
-            # ✅ Ensure API response is valid
-            if not isinstance(resp, dict) or "results" not in resp or not resp["results"]:
-                st.warning(f"Skipping {ticker}: No valid data received from API.")
-                continue
+        time.sleep(1)  # ✅ Allows multi-threaded requests without exceeding rate limits
 
-            # ✅ Convert response to DataFrame
-            df = pd.DataFrame(resp["results"])
-            if df.empty:
-                st.warning(f"Skipping {ticker}: No trading data available.")
-                continue
-
-            df['timestamp'] = pd.to_datetime(df['t'], unit='ms')
-            df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
-
-            df = calculate_rmv(df)
-            if df is None or df.empty:
-                continue
-
-            # ✅ Get latest values
-            latest = df.iloc[-1]
-            if latest['rmv'] <= 20:
-                entry_price = latest['close']
-                atr = latest['atr5']
-                stop_loss = entry_price - (1.5 * atr)
-                target_price = entry_price + (2 * (entry_price - stop_loss))
-
-                risk_amount = 0.01 * account_balance
-                risk_per_share = entry_price - stop_loss
-                position_size = int(risk_amount / risk_per_share) if risk_per_share > 0.01 else 0
-
-                trade_setups.append({
-                    'Ticker': ticker,
-                    'RMV': round(latest['rmv'], 2),
-                    'Entry': round(entry_price, 2),
-                    'Stop Loss': round(stop_loss, 2),
-                    'Target': round(target_price, 2),
-                    'Shares': position_size
-                })
-
-        except Exception as e:
-            st.error(f"Error processing {ticker}: {str(e)}")
-            continue
+    for t in threads:
+        t.join()
 
     # ✅ Display results
-    if trade_setups:
-        results_df = pd.DataFrame(trade_setups)
+    if results:
+        results_df = pd.DataFrame(results)
         st.subheader("Qualified Trade Setups")
         st.dataframe(results_df)
 
-        # ✅ Export functionality
         csv = results_df.to_csv(index=False)
         st.download_button(
             label="Export Trade List",
@@ -144,9 +143,10 @@ if uploaded_file and st.button("Run Scanner"):
             mime="text/csv"
         )
     else:
-        st.warning("No qualifying stocks found with RMV ≤ 20")
+        st.warning("No qualifying stocks found with RMV ≤ 25")  # ✅ Updated message
 
     progress_bar.empty()
     status_text.empty()
+
 
 
